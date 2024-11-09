@@ -14,7 +14,7 @@ import math
 class CmdVelControlNode(Node):
 
     def __init__(self):
-        super().__init__('cmd_vel_control_node')
+        super().__init__('decision_control_node')
 
         ## Subscriber
         # cmd_vel_tmpをサブスクライブ
