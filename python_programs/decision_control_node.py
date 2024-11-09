@@ -9,9 +9,7 @@ import select
 import threading
 import math
 
-# DONE: Shutdown this node MUST include the process:
-#           the topic /cmd_vel should be initialized to ZERO
-# otherwise the robot will catch the old and fixed /cmd_vel when accidentally push the botton 'q'
+
 
 class CmdVelControlNode(Node):
 
@@ -138,14 +136,13 @@ class CmdVelControlNode(Node):
                 # ゴールに到達した場合は停止して終了
                 self.get_logger().info("ゴールに到達しました。システムを停止します。")
                 self.go_flag = False
-                self.publish_cmd_vel()
-                #self.shutdown_node()
+
             else:
                 # 停止ポイントに到達した場合は一時停止
                 self.get_logger().info(f"停止ポイント {self.current_target_index + 1} に到達。NOGO状態に切り替えます。")
                 self.go_flag = False
                 self.reached_target_flag = True
-                self.publish_cmd_vel()
+    
 
  
     def get_key(self):

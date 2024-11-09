@@ -1,14 +1,17 @@
 from setuptools import setup
 from setuptools import find_packages
-from glob import glob
 import os
+from glob import glob
 
 package_name = "decision_controller"
 
 setup(
     name=package_name,
     version="0.1.0",
-    packages=find_packages(include=[package_name, 'python_programs', 'python_programs.*']),
+    packages=find_packages(exclude=['arxive']),
+    py_modules=[
+        'python_programs.decision_control_node',
+    ],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
