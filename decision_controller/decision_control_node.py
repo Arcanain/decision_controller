@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 import sys
 import termios
 import tty
@@ -32,13 +33,20 @@ class CmdVelControlNode(Node):
             self.odom_callback,
             10
         )
-
+        # obstacleトピックをサブスクライブ
+        self.obstacle_subscription = self.create_subscription(
+            Bool,
+            'obstacle_detected',
+            self.obstacle_callback,
+            10
+        )
         ## Publisher
         # Publisher for cmd_vel
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
 
         # Initialize flags and Twist message
         self.go_flag = True  # 初期状態をGOに設定
+        self.obstacle_detected = False #障害物検出フラグ
         self.current_cmd_vel = Twist()
 
         # For default stop signal
@@ -85,9 +93,10 @@ class CmdVelControlNode(Node):
 
     def resume_to_next_target(self):
         """Resume movement and update to the next target (stop point or goal)."""
-        if self.reached_target_flag:
+        if getattr(self, 'reached_target_flag', False) or getattr(self, 'reached_obstacle_flag', False):
             self.get_logger().info("Resuming to the next target.")
             self.reached_target_flag = False  # ゴールまたは停止ポイント到達フラグをリセット
+            self.reached_obstacle_flag = False
             self.go_flag = True
 
             # 次の停止ポイントまたはゴールに進む
@@ -102,9 +111,9 @@ class CmdVelControlNode(Node):
 
     def publish_cmd_vel(self):
         """Publish the current_cmd_vel based on go_flag state."""
-        if self.go_flag:
+        if self.go_flag and not self.obstacle_detected:
             cmd_msg = self.current_cmd_vel
-        elif not self.go_flag:
+        else:
             cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
         self.publisher.publish(cmd_msg)
         #self.get_logger().info(f'cmd_vel published GOGO ARUMI !!!: {cmd_msg}\n')
@@ -143,7 +152,19 @@ class CmdVelControlNode(Node):
                 self.go_flag = False
                 self.reached_target_flag = True
     
-
+    def obstacle_callback(self, msg):
+        """Update obstacle_detected flag based on sensor data."""
+        if msg.data and not self.obstacle_detected:
+            # 障害物が新たに検出された場合
+            self.obstacle_detected = True
+            self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。")
+            self.publish_cmd_vel()
+        elif not msg.data and self.obstacle_detected:
+            # 障害物がなくなった場合
+            self.obstacle_detected = False
+            self.get_logger().info("障害物がなくなりました。GO状態に切り替えます。")
+            # go_flagがTrueであれば、自動的に動作を再開
+            self.publish_cmd_vel()
  
     def get_key(self):
         """Non-blocking keyboard input getter for single character."""
