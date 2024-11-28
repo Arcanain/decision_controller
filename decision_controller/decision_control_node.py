@@ -72,6 +72,10 @@ class CmdVelControlNode(Node):
         #self.timer = self.create_timer(0.1, self.publish_cmd_vel)
         self.get_logger().info('Node is running. Press SPACE to toggle GO/NOGO, Q to quit.\n\n')
 
+        self.obstacle_timer = None
+        self.ignore_obstacles = False 
+        self.ignore_timer = None
+
     def monitor_keyboard_input(self):
         """Monitor keyboard input and toggle go_flag on SPACE, P, and Q keys."""
         while rclpy.ok():
@@ -154,18 +158,49 @@ class CmdVelControlNode(Node):
     
     def obstacle_callback(self, msg):
         """Update obstacle_detected flag based on sensor data."""
+        if self.ignore_obstacles:
+            return
+
         if msg.data and not self.obstacle_detected:
             # 障害物が新たに検出された場合
             self.obstacle_detected = True
             self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。")
             self.publish_cmd_vel()
+
+            if self.obstacle_timer is None:
+                self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
+                self.obstacle_timer.start()
         elif not msg.data and self.obstacle_detected:
             # 障害物がなくなった場合
             self.obstacle_detected = False
             self.get_logger().info("障害物がなくなりました。GO状態に切り替えます。")
+
+            if self.obstacle_timer is not None:
+                self.obstacle_timer.cancel()
+                self.obstacle_timer = None
             # go_flagがTrueであれば、自動的に動作を再開
             self.publish_cmd_vel()
  
+    def reset_obstacle_detected(self):
+        """Reset obstacle_detected flag after timer expires."""
+        self.obstacle_detected = False
+        self.obstacle_timer = None
+        self.get_logger().info("10秒が経過しました。GO状態に切り替えます。")
+        self.ignore_obstacles = True
+
+        if self.ignore_timer is None:
+            self.ignore_timer = threading.Timer(5.0, self.reset_ignore_obstacles)
+            self.ignore_timer.start()
+
+        self.publish_cmd_vel()
+
+    def reset_ignore_obstacles(self):
+        """Reset ignore_obstacles flag after timer expires."""
+        self.ignore_obstacles = False
+        self.ignore_timer = None
+        self.get_logger().info("5秒が経過しました。障害物の検知を再開します。")
+
+
     def get_key(self):
         """Non-blocking keyboard input getter for single character."""
         fd = sys.stdin.fileno()
@@ -183,6 +218,14 @@ class CmdVelControlNode(Node):
         """Shutdown the node and stop publishing to /cmd_vel."""
         self.get_logger().info('Shutting down the node.')
         self.publisher.publish(self.default_stop_cmd)
+
+        if self.obstacle_timer is not None:
+            self.obstacle_timer.cancel()
+            self.obstacle_timer = None
+        if self.ignore_timer is not None:
+            self.ignore_timer.cancel()
+            self.ignore_timer = None
+
         rclpy.shutdown()  # ROS2のシャットダウン
         self.destroy_node()  # ノードの破棄
 
