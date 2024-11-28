@@ -76,6 +76,17 @@ class CmdVelControlNode(Node):
         self.ignore_obstacles = False 
         self.ignore_timer = None
 
+        self.compensate_turn = False
+        self.compensate_timer = None
+
+        self.ignore_twist_cmd = Twist()
+        self.ignore_twist_cmd.linear.x = 0.5  # 前進速度
+        self.ignore_twist_cmd.angular.z = -math.pi/15  # 右方向への角速度（負の値）
+
+        self.compensate_twist_cmd = Twist()
+        self.compensate_twist_cmd.linear.x = 0.5  # 前進速度
+        self.compensate_twist_cmd.angular.z = math.pi / 15  # 左回転の角速度
+
     def monitor_keyboard_input(self):
         """Monitor keyboard input and toggle go_flag on SPACE, P, and Q keys."""
         while rclpy.ok():
@@ -115,10 +126,20 @@ class CmdVelControlNode(Node):
 
     def publish_cmd_vel(self):
         """Publish the current_cmd_vel based on go_flag state."""
-        if self.go_flag and not self.obstacle_detected:
-            cmd_msg = self.current_cmd_vel
+        if self.go_flag:
+            if self.compensate_turn:
+                cmd_msg = self.compensate_twist_cmd
+                self.get_logger().info("補正期間中のcmd_velを送信しています。")
+            elif self.ignore_obstacles:
+                cmd_msg = self.ignore_twist_cmd
+                self.get_logger().info("障害物無視期間中のcmd_velを送信しています。")
+            elif not self.obstacle_detected:
+                cmd_msg = self.current_cmd_vel
+                self.get_logger().info("通常のcmd_velを送信しています。")
+            else:
+                cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
         else:
-            cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
+            cmd_msg = self.default_stop_cmd
         self.publisher.publish(cmd_msg)
         #self.get_logger().info(f'cmd_vel published GOGO ARUMI !!!: {cmd_msg}\n')
         #self.get_logger().info(f'cmd_vel published GOGO ARUMI !!!\n')
@@ -158,7 +179,7 @@ class CmdVelControlNode(Node):
     
     def obstacle_callback(self, msg):
         """Update obstacle_detected flag based on sensor data."""
-        if self.ignore_obstacles:
+        if self.ignore_obstacles or self.compensate_turn:
             return
 
         if msg.data and not self.obstacle_detected:
@@ -189,7 +210,7 @@ class CmdVelControlNode(Node):
         self.ignore_obstacles = True
 
         if self.ignore_timer is None:
-            self.ignore_timer = threading.Timer(5.0, self.reset_ignore_obstacles)
+            self.ignore_timer = threading.Timer(3.0, self.reset_ignore_obstacles)
             self.ignore_timer.start()
 
         self.publish_cmd_vel()
@@ -198,8 +219,23 @@ class CmdVelControlNode(Node):
         """Reset ignore_obstacles flag after timer expires."""
         self.ignore_obstacles = False
         self.ignore_timer = None
-        self.get_logger().info("5秒が経過しました。障害物の検知を再開します。")
+        self.get_logger().info("5秒が経過しました。補正します。")
 
+        self.compensate_turn = True
+
+        if self.compensate_timer is None:
+            self.compensate_timer = threading.Timer(6.0, self.reset_compensate_turn)
+            self.compensate_timer.start()
+
+        self.publish_cmd_vel()
+
+    def reset_compensate_turn(self):
+        """Reset compensate_turn flag after timer expires."""
+        self.compensate_turn = False
+        self.compensate_timer = None
+        self.get_logger().info("補正期間が終了しました。通常の動作に戻ります。")
+
+        self.publish_cmd_vel()
 
     def get_key(self):
         """Non-blocking keyboard input getter for single character."""
@@ -225,6 +261,9 @@ class CmdVelControlNode(Node):
         if self.ignore_timer is not None:
             self.ignore_timer.cancel()
             self.ignore_timer = None
+        if self.compensate_timer is not None:
+            self.compensate_timer.cancel()
+            self.compensate_timer = None
 
         rclpy.shutdown()  # ROS2のシャットダウン
         self.destroy_node()  # ノードの破棄
