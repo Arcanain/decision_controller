@@ -71,7 +71,7 @@ class CmdVelControlNode(Node):
 
         # 定期的にTwistメッセージをパブリッシュ
         #self.timer = self.create_timer(0.1, self.publish_cmd_vel)
-        self.get_logger().info('Node is running. Press SPACE to toggle GO/NOGO, Q to quit.\n\n')
+        self.get_logger().info('\rNode is running. Press SPACE to toggle GO/NOGO, Q to quit.')
 
         self.obstacle_timer = None
         self.ignore_obstacles = False 
@@ -103,14 +103,14 @@ class CmdVelControlNode(Node):
         """Toggle go_flag and log the state."""
         self.go_flag = not self.go_flag
         state = "GO" if self.go_flag else "NOGO"
-        self.get_logger().info(f'State changed to: {state}\n')
+        self.get_logger().info(f'State changed to: {state}\r')
         # Immediately publish to reflect state change
         #self.publish_cmd_vel()
 
     def resume_to_next_target(self):
         """Resume movement and update to the next target (stop point or goal)."""
         if getattr(self, 'reached_target_flag', False) or getattr(self, 'reached_obstacle_flag', False):
-            self.get_logger().info("Resuming to the next target.")
+            self.get_logger().info("Resuming to the next target.\r")
             self.reached_target_flag = False  # ゴールまたは停止ポイント到達フラグをリセット
             self.reached_obstacle_flag = False
             self.go_flag = True
@@ -130,13 +130,14 @@ class CmdVelControlNode(Node):
         if self.go_flag:
             if self.compensate_turn:
                 cmd_msg = self.compensate_twist_cmd
-                self.get_logger().info("補正期間中のcmd_velを送信しています。")
+                self.get_logger().info("補正期間中のcmd_velを送信しています。\r")
             elif self.ignore_obstacles:
                 cmd_msg = self.ignore_twist_cmd
-                self.get_logger().info("障害物無視期間中のcmd_velを送信しています。")
+                self.get_logger().info("障害物無視期間中のcmd_velを送信しています。\r")
             elif not self.obstacle_detected:
                 cmd_msg = self.current_cmd_vel
-                self.get_logger().info("通常のcmd_velを送信しています。")
+                self.get_logger().info("通常のcmd_velを送信しています。\r")
+                #print("通常のcmd_velを送信しています。")
             else:
                 cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
         else:
@@ -150,7 +151,7 @@ class CmdVelControlNode(Node):
         # cmd_vel_tmpの値を受け取り、現在の制御量を更新
         #print('sub')
         self.current_cmd_vel = msg
-        self.publish_cmd_vel()
+        #self.publish_cmd_vel()
     
     def odom_callback(self, msg):
         """Check proximity to current target and update go_flag accordingly."""
@@ -162,20 +163,25 @@ class CmdVelControlNode(Node):
         current_y = msg.pose.pose.position.y
         distance_to_goal = math.hypot(target_x - current_x, target_y - current_y)
 
-        print(f"\n\nDistance to Target {self.current_target_index + 1}: {distance_to_goal}")
-        print(f"Current Position: ({current_x}, {current_y})")
-        print(f"Target Position: ({target_x}, {target_y})")
+        #print(f"\n\nDistance to Target {self.current_target_index + 1}: {distance_to_goal}")
+        #print(f"Current Position: ({current_x}, {current_y})")
+        #print(f"Target Position: ({target_x}, {target_y})")
+
+        self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {distance_to_goal:.2f}\r")
+        self.get_logger().info(f"Current Position: ({current_x:.2f}, {current_y:.2f})\r")
+        self.get_logger().info(f"Target Position: ({target_x:.2f}, {target_y:.2f})\r")
+
 
         # ターゲット（停止ポイントまたはゴール）に到達した場合
         if distance_to_goal < self.distance_threshold:
             if self.current_target == self.goal:
                 # ゴールに到達した場合は停止して終了
-                self.get_logger().info("ゴールに到達しました。システムを停止します。")
-                #self.go_flag = False 
+                self.get_logger().info("ゴールに到達しました。\r")
+ 
 
             else:
                 # 停止ポイントに到達した場合は一時停止
-                self.get_logger().info(f"停止ポイント {self.current_target_index + 1} に到達。NOGO状態に切り替えます。")
+                self.get_logger().info(f"停止ポイント {self.current_target_index + 1} : {self.stop_points[self.current_target_index]} に到達。NOGO状態に切り替えます。\r")
                 self.go_flag = False
                 self.reached_target_flag = True
     
@@ -187,8 +193,8 @@ class CmdVelControlNode(Node):
         if msg.data and not self.obstacle_detected:
             # 障害物が新たに検出された場合
             self.obstacle_detected = True
-            self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。")
-            self.publish_cmd_vel()
+            self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。\r")
+        
 
             if self.obstacle_timer is None:
                 self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
@@ -197,32 +203,31 @@ class CmdVelControlNode(Node):
         elif not msg.data and self.obstacle_detected:
             # 障害物がなくなった場合
             self.obstacle_detected = False
-            self.get_logger().info("障害物がなくなりました。GO状態に切り替えます。")
+            self.get_logger().info("障害物がなくなりました。GO状態に切り替えます。\r")
 
             if self.obstacle_timer is not None:
                 self.obstacle_timer.cancel()
                 self.obstacle_timer = None
             # go_flagがTrueであれば、自動的に動作を再開
-            self.publish_cmd_vel()
+           
  
     def reset_obstacle_detected(self):
         """Reset obstacle_detected flag after timer expires."""
         self.obstacle_detected = False
         self.obstacle_timer = None
-        self.get_logger().info("10秒が経過しました。GO状態に切り替えます。")
+        self.get_logger().info("10秒が経過しました。GO状態に切り替えます。\r")
         self.ignore_obstacles = True
 
         if self.ignore_timer is None:
             self.ignore_timer = threading.Timer(3.0, self.reset_ignore_obstacles)
             self.ignore_timer.start()
 
-        self.publish_cmd_vel()
 
     def reset_ignore_obstacles(self):
         """Reset ignore_obstacles flag after timer expires."""
         self.ignore_obstacles = False
         self.ignore_timer = None
-        self.get_logger().info("5秒が経過しました。補正します。")
+        self.get_logger().info("5秒が経過しました。補正します。\r")
 
         self.compensate_turn = True
 
@@ -230,16 +235,15 @@ class CmdVelControlNode(Node):
             self.compensate_timer = threading.Timer(6.0, self.reset_compensate_turn)
             self.compensate_timer.start()
 
-        self.publish_cmd_vel()
 
     def reset_compensate_turn(self):
         """Reset compensate_turn flag after timer expires."""
         self.compensate_turn = False
         self.compensate_timer = None
-        self.get_logger().info("補正期間が終了しました。通常の動作に戻ります。")
+        self.get_logger().info("補正期間が終了しました。通常の動作に戻ります。\r")
+        
 
-        self.publish_cmd_vel()
-
+    # handle keyboad input
     def get_key(self):
         """Non-blocking keyboard input getter for single character."""
         fd = sys.stdin.fileno()
@@ -253,9 +257,11 @@ class CmdVelControlNode(Node):
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+
+    # shutdown node
     def shutdown_node(self):
         """Shutdown the node and stop publishing to /cmd_vel."""
-        self.get_logger().info('Shutting down the node.')
+        self.get_logger().info('Shutting down the node.\r')
         self.publisher.publish(self.default_stop_cmd)
 
         if self.obstacle_timer is not None:
