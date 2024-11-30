@@ -137,11 +137,19 @@ class CmdVelControlNode(Node):
             elif not self.obstacle_detected:
                 cmd_msg = self.current_cmd_vel
                 self.get_logger().info("通常のcmd_velを送信しています。\r")
-                #print("通常のcmd_velを送信しています。")
             else:
-                cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
+                cmd_msg = self.default_stop_cmd 
+                self.get_logger().info("障害物検知により一時停止中です\r")
+        # NOGO状態では停止メッセージ
         else:
-            cmd_msg = self.default_stop_cmd
+            cmd_msg = self.default_stop_cmd 
+            self.get_logger().info("一時停止中です\r")
+
+        target_x, target_y = self.current_target
+        self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {self.distance_to_goal:.2f}\r")
+        self.get_logger().info(f"Current Position: ({self.current_x:.2f}, {self.current_y:.2f})\r")
+        self.get_logger().info(f"Target Position: ( {target_x:.2f},  {target_y:.2f})\r")
+    
         
         
         self.publisher.publish(cmd_msg)
@@ -151,7 +159,8 @@ class CmdVelControlNode(Node):
         # cmd_vel_tmpの値を受け取り、現在の制御量を更新
         #print('sub')
         self.current_cmd_vel = msg
-        #self.publish_cmd_vel()
+        self.publish_cmd_vel()
+        
     
     def odom_callback(self, msg):
         """Check proximity to current target and update go_flag accordingly."""
@@ -159,26 +168,20 @@ class CmdVelControlNode(Node):
         target_x, target_y = self.current_target
 
         # 現在の位置
-        current_x = msg.pose.pose.position.x
-        current_y = msg.pose.pose.position.y
-        distance_to_goal = math.hypot(target_x - current_x, target_y - current_y)
+        self.current_x = msg.pose.pose.position.x
+        self.current_y = msg.pose.pose.position.y
+        self.distance_to_goal = math.hypot(target_x - self.current_x, target_y - self.current_y)
 
-        #print(f"\n\nDistance to Target {self.current_target_index + 1}: {distance_to_goal}")
-        #print(f"Current Position: ({current_x}, {current_y})")
-        #print(f"Target Position: ({target_x}, {target_y})")
-
-        self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {distance_to_goal:.2f}\r")
-        self.get_logger().info(f"Current Position: ({current_x:.2f}, {current_y:.2f})\r")
-        self.get_logger().info(f"Target Position: ({target_x:.2f}, {target_y:.2f})\r")
-
+        #self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {distance_to_goal:.2f}\r")
+        #self.get_logger().info(f"Current Position: ({current_x:.2f}, {current_y:.2f})\r")
+        #self.get_logger().info(f"Target Position: ({target_x:.2f}, {target_y:.2f})\r")
 
         # ターゲット（停止ポイントまたはゴール）に到達した場合
-        if distance_to_goal < self.distance_threshold:
+        if self.distance_to_goal < self.distance_threshold:
             if self.current_target == self.goal:
                 # ゴールに到達した場合は停止して終了
                 self.get_logger().info("ゴールに到達しました。\r")
  
-
             else:
                 # 停止ポイントに到達した場合は一時停止
                 self.get_logger().info(f"停止ポイント {self.current_target_index + 1} : {self.stop_points[self.current_target_index]} に到達。NOGO状態に切り替えます。\r")
@@ -194,7 +197,6 @@ class CmdVelControlNode(Node):
             # 障害物が新たに検出された場合
             self.obstacle_detected = True
             self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。\r")
-        
 
             if self.obstacle_timer is None:
                 self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
