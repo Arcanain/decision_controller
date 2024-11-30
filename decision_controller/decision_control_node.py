@@ -40,6 +40,7 @@ class CmdVelControlNode(Node):
             self.obstacle_callback,
             10
         )
+
         ## Publisher
         # Publisher for cmd_vel
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
@@ -140,9 +141,10 @@ class CmdVelControlNode(Node):
                 cmd_msg = self.default_stop_cmd # NOGO状態では停止メッセージ
         else:
             cmd_msg = self.default_stop_cmd
+        
+        
         self.publisher.publish(cmd_msg)
-        #self.get_logger().info(f'cmd_vel published GOGO ARUMI !!!: {cmd_msg}\n')
-        #self.get_logger().info(f'cmd_vel published GOGO ARUMI !!!\n')
+
 
     def cmd_vel_tmp_callback(self, msg):
         # cmd_vel_tmpの値を受け取り、現在の制御量を更新
@@ -169,7 +171,7 @@ class CmdVelControlNode(Node):
             if self.current_target == self.goal:
                 # ゴールに到達した場合は停止して終了
                 self.get_logger().info("ゴールに到達しました。システムを停止します。")
-                self.go_flag = False
+                #self.go_flag = False 
 
             else:
                 # 停止ポイントに到達した場合は一時停止
@@ -191,6 +193,7 @@ class CmdVelControlNode(Node):
             if self.obstacle_timer is None:
                 self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
                 self.obstacle_timer.start()
+                
         elif not msg.data and self.obstacle_detected:
             # 障害物がなくなった場合
             self.obstacle_detected = False
