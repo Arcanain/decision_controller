@@ -43,7 +43,7 @@ class CmdVelControlNode(Node):
 
         self.is_avoidance_area_sub = self.create_subscription(
             Bool,
-            'is_avoidance_area',
+            'goal_status',
             self.is_avoidance_toggle,
             10
         )
