@@ -90,12 +90,15 @@ class CmdVelControlNode(Node):
         self.compensate_timer = None
 
         self.ignore_twist_cmd = Twist()
-        self.ignore_twist_cmd.linear.x = 0.5  # 前進速度
-        self.ignore_twist_cmd.angular.z = -math.pi/15  # 右方向への角速度（負の値）
+        self.ignore_twist_cmd.linear.x = 0.25  # 前進速度
+        self.ignore_twist_cmd.angular.z = -math.pi/5.5  # 右方向への角速度（負の値）
 
         self.compensate_twist_cmd = Twist()
-        self.compensate_twist_cmd.linear.x = 0.5  # 前進速度
-        self.compensate_twist_cmd.angular.z = math.pi / 15  # 左回転の角速度
+        self.compensate_twist_cmd.linear.x = 0.4  # 前進速度
+        self.compensate_twist_cmd.angular.z = math.pi / 8  # 左回転の角速度
+
+        self.avoid_time = 3.0
+        self.return_time = 6.0
 
     def monitor_keyboard_input(self):
         """Monitor keyboard input and toggle go_flag on SPACE, P, and Q keys."""
@@ -235,7 +238,7 @@ class CmdVelControlNode(Node):
         self.ignore_obstacles = True
 
         if self.ignore_timer is None:
-            self.ignore_timer = threading.Timer(3.0, self.reset_ignore_obstacles)
+            self.ignore_timer = threading.Timer(self.avoid_time, self.reset_ignore_obstacles)
             self.ignore_timer.start()
 
 
@@ -248,7 +251,7 @@ class CmdVelControlNode(Node):
         self.compensate_turn = True
 
         if self.compensate_timer is None:
-            self.compensate_timer = threading.Timer(6.0, self.reset_compensate_turn)
+            self.compensate_timer = threading.Timer(self.return_time, self.reset_compensate_turn)
             self.compensate_timer.start()
 
 
