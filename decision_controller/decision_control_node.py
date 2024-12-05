@@ -82,6 +82,10 @@ class CmdVelControlNode(Node):
         #self.timer = self.create_timer(0.1, self.publish_cmd_vel)
         self.get_logger().info('\rNode is running. Press SPACE to toggle GO/NOGO, Q to quit.')
 
+        # temporal ignore
+        self.ignore_duration  = 5.0 #duration
+        self.temporal_ignore_flag = False
+
         self.obstacle_timer   = None
         self.ignore_obstacles = False 
         self.ignore_timer     = None
@@ -146,23 +150,30 @@ class CmdVelControlNode(Node):
 
     def publish_cmd_vel(self):
         """Publish the current_cmd_vel based on go_flag state."""
-        if self.go_flag:
-            if self.compensate_turn:
-                cmd_msg = self.compensate_twist_cmd
-                self.get_logger().info("もとの経路へ回帰中\r")
-            elif self.ignore_obstacles:
-                cmd_msg = self.ignore_twist_cmd
-                self.get_logger().info("障害物回避動作中\r")
-            elif not self.obstacle_detected:
-                cmd_msg = self.current_cmd_vel
-                self.get_logger().info("通常運転運転中\r")
+        if self.temporal_ignore_flag == False:
+            # IF self.temporal_ignore_flag is False,it will proceed to the main process
+            if self.go_flag:
+                if self.compensate_turn:
+                    cmd_msg = self.compensate_twist_cmd
+                    self.get_logger().info("もとの経路へ回帰中\r")
+                elif self.ignore_obstacles:
+                    cmd_msg = self.ignore_twist_cmd
+                    self.get_logger().info("障害物回避動作中\r")
+                elif not self.obstacle_detected:
+                    cmd_msg = self.current_cmd_vel
+                    self.get_logger().info("通常運転運転中\r")
+                else:
+                    cmd_msg = self.default_stop_cmd 
+                    self.get_logger().info("障害物検知により一時停止中\r")
+            # NOGO状態では停止メッセージ
             else:
                 cmd_msg = self.default_stop_cmd 
-                self.get_logger().info("障害物検知により一時停止中\r")
-        # NOGO状態では停止メッセージ
-        else:
-            cmd_msg = self.default_stop_cmd 
-            self.get_logger().info("一時停止中\r")
+                self.get_logger().info("一時停止中\r")
+        else :
+            # Otherwise, obstacles will be ignored for 'self.ignore duration' seconds.
+            cmd_msg = self.current_cmd_vel
+            self.get_logger().info("障害物を無視して5秒間進みます\r")
+
 
         
         self.publisher.publish(cmd_msg)
@@ -219,6 +230,11 @@ class CmdVelControlNode(Node):
             if self.obstacle_timer is None and self.is_avoidance_area == True:
                 self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
                 self.obstacle_timer.start()
+
+
+            if self.obstacle_timer is None and self.is_avoidance_area == False:
+                self.obstacle_timer = threading.Timer(10.0, self.temporal_ignore_obstacle)
+                self.obstacle_timer.start()
                
         elif not msg.data and self.obstacle_detected:
             # 障害物がなくなった場合
@@ -229,7 +245,33 @@ class CmdVelControlNode(Node):
                 self.obstacle_timer.cancel()
                 self.obstacle_timer = None
 
- 
+    # is_avoidance_areaではないときに、一定時間(ignore_duration)だけ無視して進行するためのフラグをtrueにする。経過後、falseにする  
+    def temporal_ignore_obstacle(self):
+        """10秒後に障害物無視フラグをTrueにし、さらに5秒後にFalseに戻す"""
+        self.temporal_ignore_flag = True  # 障害物を無視する状態に設定
+        self.get_logger().info("10秒経過。障害物を無視して動作を継続します。\r")
+        self.obstacle_detected = False
+
+        # 5秒後に障害物無視フラグを解除
+        if self.ignore_timer is None:
+            self.ignore_timer = threading.Timer(self.ignore_duration, self.reset_ignore_obstacles_flag)
+            self.ignore_timer.start()
+
+        # obstacle_timerをリセット
+        self.obstacle_timer = None
+
+    def reset_ignore_obstacles_flag(self):
+        """障害物無視フラグをFalseに戻す"""
+        self.temporal_ignore_flag = False
+        self.get_logger().info("5秒経過。障害物検知を再開します。\r")
+
+        # ignore_timerをリセット
+        self.ignore_timer = None
+
+
+
+    # 関数名は一旦無視
+    # スレッドで10秒後に呼ばれる、回避行動のトリガー関数
     def reset_obstacle_detected(self):
         """Reset obstacle_detected flag after timer expires."""
         self.obstacle_detected = False
@@ -241,7 +283,7 @@ class CmdVelControlNode(Node):
             self.ignore_timer = threading.Timer(self.avoid_time, self.reset_ignore_obstacles)
             self.ignore_timer.start()
 
-
+    # トリガー関数で呼び出される、回避のために予め定めた動きを呼び出す回避関数
     def reset_ignore_obstacles(self):
         """Reset ignore_obstacles flag after timer expires."""
         self.ignore_obstacles = False
@@ -254,7 +296,7 @@ class CmdVelControlNode(Node):
             self.compensate_timer = threading.Timer(self.return_time, self.reset_compensate_turn)
             self.compensate_timer.start()
 
-
+    # 回避関数に呼び出される、回避動作から経路に戻るために補正する回帰関数
     def reset_compensate_turn(self):
         """Reset compensate_turn flag after timer expires."""
         self.compensate_turn = False
