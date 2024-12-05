@@ -65,7 +65,7 @@ class CmdVelControlNode(Node):
         self.default_stop_cmd.angular.z = 0.0
         
         # 複数の停止ポイント座標とゴール座標の設定
-        self.stop_points = [(8.79564, -4.04099), (-23.7192, -100.026)]  # 例として複数の停止ポイント
+        self.stop_points = [(5.01291,-0.0277817), (-23.7192, -100.026)]  # 例として複数の停止ポイント
         self.goal = (-50.0, -50.0)  # ゴール座標を1点のみ設定
         self.distance_threshold = 0.5
         self.current_target_index = 0  # 最初の停止ポイントからスタート
