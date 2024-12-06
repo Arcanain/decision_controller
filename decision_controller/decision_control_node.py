@@ -139,12 +139,13 @@ class CmdVelControlNode(Node):
         else :
             return
     
-    def is_path_04_sub(self, msg):
+    def is_path_04_callback(self, msg):
         if msg.data == True:
-            self.is_path_04_sub = True
+            self.is_path_04 = True
         elif msg.data == False:
             self.is_path_04 = False
         else: return
+
     def resume_to_next_target(self):
         """Resume movement and update to the next target (stop point or goal)."""
         if getattr(self, 'reached_target_flag', False) or getattr(self, 'reached_obstacle_flag', False):
@@ -166,28 +167,28 @@ class CmdVelControlNode(Node):
     def publish_cmd_vel(self):
         """Publish the current_cmd_vel based on go_flag state."""
         if self.temporal_ignore_flag == False:
-            # IF self.temporal_ignore_flag is False,it will proceed to the main process
+            # If self.temporal_ignore_flag is False, proceed to the main process
             if self.go_flag:
                 if self.compensate_turn:
                     cmd_msg = self.compensate_twist_cmd
-                    self.get_logger().info("経路回帰\r")
+                    self.get_logger().info("Returning to path\r")
                 elif self.ignore_obstacles:
                     cmd_msg = self.ignore_twist_cmd
-                    self.get_logger().info("障害物回避動作中\r")
+                    self.get_logger().info("Obstacle avoidance in progress\r")
                 elif not self.obstacle_detected:
                     cmd_msg = self.current_cmd_vel
-                    self.get_logger().info("通常運転運転中\r")
+                    self.get_logger().info("Normal operation in progress\r")
                 else:
                     cmd_msg = self.default_stop_cmd 
-                    self.get_logger().info("障害物検知により一時停止中\r")
-            # NOGO状態では停止メッセージ
+                    self.get_logger().info("Temporary stop due to obstacle detection\r")
+            # If NOGO state, publish a stop message
             else:
                 cmd_msg = self.default_stop_cmd 
-                self.get_logger().info("一時停止中\r")
-        else :
-            # Otherwise, obstacles will be ignored for 'self.ignore duration' seconds.
+                self.get_logger().info("Temporary stop\r")
+        else:
+            # Otherwise, obstacles will be ignored for 'self.ignore_duration' seconds.
             cmd_msg = self.current_cmd_vel
-            self.get_logger().info("障害物を無視して5秒間進みます\r")
+            self.get_logger().info("Proceeding while ignoring obstacles for 5 seconds\r")
 
 
         
