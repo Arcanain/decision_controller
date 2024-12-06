@@ -70,7 +70,7 @@ class CmdVelControlNode(Node):
         # 停止点２ 64.4472, 35.7471  
         
 
-        self.stop_points = [(26.6831,  30.5581), (64.4472, 35.7471)]  # 例として複数の停止ポイント
+        self.stop_points = [(26.6831,  30.5581), (63.6472, 35.7471)]  # 例として複数の停止ポイント
         self.goal = (-50.0, -50.0)  # ゴール座標を1点のみ設定
         self.distance_threshold = 0.5
         self.current_target_index = 0  # 最初の停止ポイントからスタート
