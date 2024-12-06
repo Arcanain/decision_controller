@@ -48,7 +48,14 @@ class CmdVelControlNode(Node):
             10
         )
         self.is_avoidance_area = False
-        
+
+        self.is_path_04_sub = self.create_subscription(
+            Bool,
+            'goal_status3',
+            self.is_path_04_callback,
+            10
+        )
+        self.is_path_04:Bool = False
 
         ## Publisher
         # Publisher for cmd_vel
@@ -83,9 +90,7 @@ class CmdVelControlNode(Node):
         self.input_thread.daemon = True  # プログラム終了時にスレッドも終了
         self.input_thread.start()
 
-        # 定期的にTwistメッセージをパブリッシュ
-        #self.timer = self.create_timer(0.1, self.publish_cmd_vel)
-        self.get_logger().info('\rNode is running. Press SPACE to toggle GO/NOGO, Q to quit.')
+        self.get_logger().info('Node is running. Press SPACE to toggle GO/NOGO, Q to quit.\r')
 
         # temporal ignore
         self.ignore_duration  = 5.0 #duration
@@ -129,12 +134,17 @@ class CmdVelControlNode(Node):
     def is_avoidance_toggle(self,msg):
         if   msg.data == True :
             self.is_avoidance_area = True
-            self.get_logger().info("Resuming to the next target.\r")
         elif msg.data == False:
             self.is_avoidance_area = False
         else :
             return
-
+    
+    def is_path_04_sub(self, msg):
+        if msg.data == True:
+            self.is_path_04_sub = True
+        elif msg.data == False:
+            self.is_path_04 = False
+        else: return
     def resume_to_next_target(self):
         """Resume movement and update to the next target (stop point or goal)."""
         if getattr(self, 'reached_target_flag', False) or getattr(self, 'reached_obstacle_flag', False):
@@ -160,7 +170,7 @@ class CmdVelControlNode(Node):
             if self.go_flag:
                 if self.compensate_turn:
                     cmd_msg = self.compensate_twist_cmd
-                    self.get_logger().info("もとの経路へ回帰中\r")
+                    self.get_logger().info("経路回帰\r")
                 elif self.ignore_obstacles:
                     cmd_msg = self.ignore_twist_cmd
                     self.get_logger().info("障害物回避動作中\r")
@@ -201,9 +211,9 @@ class CmdVelControlNode(Node):
         self.distance_to_goal = math.hypot(target_x - self.current_x, target_y - self.current_y)
 
         if self.is_avoidance_area :
-            self.get_logger().info("回避行動有効エリア\r")
+            self.get_logger().info("Avoidance Enabled\r")
         else :
-            self.get_logger().info("回避行動無効エリア：障害物消失まで停止します。\r")
+            self.get_logger().info("Avoidance Disabled\r")
         self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {self.distance_to_goal:.2f}\r")
         self.get_logger().info(f"Current Position: ({self.current_x:.2f}, {self.current_y:.2f})\r")
         self.get_logger().info(f"Target Position: ( {target_x:.2f},  {target_y:.2f})\r")
@@ -230,17 +240,19 @@ class CmdVelControlNode(Node):
         if msg.data and not self.obstacle_detected:
             # 障害物が新たに検出された場合
             self.obstacle_detected = True
-            self.get_logger().info("障害物を検出しました。NOGO状態に切り替えます。\r")
+            self.get_logger().info("Obstacle detected. Swiched NOGO.\r")
 
-            if self.obstacle_timer is None and self.is_avoidance_area == True:
-                self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
-                self.obstacle_timer.start()
+            if self.obstacle_timer is None:
+                if self.is_path_04 == False:
+                    if self.is_avoidance_area == True:
+                        self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
+                        self.obstacle_timer.start()
+                    elif self.is_avoidance_area == False:
+                        self.obstacle_timer = threading.Timer(10.0, self.temporal_ignore_obstacle)
+                        self.obstacle_timer.start()
+                #elif self.is_path_04 == True:
 
 
-            if self.obstacle_timer is None and self.is_avoidance_area == False:
-                self.obstacle_timer = threading.Timer(10.0, self.temporal_ignore_obstacle)
-                self.obstacle_timer.start()
-               
         elif not msg.data and self.obstacle_detected:
             # 障害物がなくなった場合
             self.obstacle_detected = False
