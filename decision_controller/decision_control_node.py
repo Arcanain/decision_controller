@@ -93,7 +93,7 @@ class CmdVelControlNode(Node):
         self.get_logger().info('Node is running. Press SPACE to toggle GO/NOGO, Q to quit.\r')
 
         # temporal ignore
-        self.ignore_duration  = 5.0 #duration
+        self.ignore_duration  = 1.3 #duration
         self.temporal_ignore_flag = False
 
         self.obstacle_timer   = None
@@ -249,9 +249,10 @@ class CmdVelControlNode(Node):
                         self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
                         self.obstacle_timer.start()
                     elif self.is_avoidance_area == False:
-                        self.obstacle_timer = threading.Timer(10.0, self.temporal_ignore_obstacle)
+                        self.obstacle_timer = threading.Timer(25.0, self.temporal_ignore_obstacle)
                         self.obstacle_timer.start()
-                #elif self.is_path_04 == True:
+            elif self.is_path_04 == True:
+                self.go_flag = False
 
 
         elif not msg.data and self.obstacle_detected:
