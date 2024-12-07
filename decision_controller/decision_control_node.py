@@ -75,9 +75,16 @@ class CmdVelControlNode(Node):
         # 本番経路の停止点
         # 停止点1 26.6831,  30.5581
         # 停止点２ 64.4472, 35.7471  
-        
+        #Target Point 2: Closest Point = (223.646, -68.5382), Index = 979 白線
 
-        self.stop_points = [(26.6831,  30.5581), (63.6472, 35.7471)]  # 例として複数の停止ポイント
+        #Target Point 3: Closest Point = (222.879, -75.2085), Index = 1055 点字
+
+        #Target Point 4: Closest Point = (221.272, -95.0025), Index = 1275 白線
+
+        #Target Point 5: Closest Point = (224.8, -97.1773), Index = 1326 点字
+        
+        #                    横断歩道1            横断歩道２　　　　　横断歩道3　　　　　 白線1　　　　　　　　点字1                 白線2              点字2
+        self.stop_points = [(26.6831,  30.5581), (63.6472, 35.7471),  (140.067, 29.0186), (223.646, -68.5382), (222.879, -75.2085), (221.272, -95.0025),(224.8, -97.1773)]  
         self.goal = (-50.0, -50.0)  # ゴール座標を1点のみ設定
         self.distance_threshold = 0.5
         self.current_target_index = 0  # 最初の停止ポイントからスタート
