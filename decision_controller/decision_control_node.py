@@ -11,29 +11,31 @@ import threading
 import math
 
 
-
 class CmdVelControlNode(Node):
 
     def __init__(self):
         super().__init__('decision_control_node')
 
-        ## Subscriber
-        # cmd_vel_tmpをサブスクライブ
+        # =========================
+        # Subscribers
+        # =========================
+        # /cmd_vel_tmp: ローカルプランナなどからの元の速度指令
         self.cmd_vel_subscription = self.create_subscription(
             Twist,
             'cmd_vel_tmp',
-            self.cmd_vel_tmp_callback,  # callback func
+            self.cmd_vel_tmp_callback,
             20
         )
 
-        # odomトピックをサブスクライブ
+        # /odom: 自己位置
         self.odom_subscription = self.create_subscription(
             Odometry,
             'odom',
             self.odom_callback,
             10
         )
-        # obstacleトピックをサブスクライブ
+
+        # /obstacle_detected: 障害物検知（True = 障害物あり）
         self.obstacle_subscription = self.create_subscription(
             Bool,
             'obstacle_detected',
@@ -41,328 +43,342 @@ class CmdVelControlNode(Node):
             10
         )
 
-        self.is_avoidance_area_sub = self.create_subscription(
+        # /dwa_active: DWA が現在有効かどうか
+        self.dwa_active_subscription = self.create_subscription(
             Bool,
-            'goal_status2',
-            self.is_avoidance_toggle,
+            'dwa_active',
+            self.dwa_active_callback,
             10
         )
-        self.is_avoidance_area = False
 
-        self.is_path_04_sub = self.create_subscription(
-            Bool,
-            'goal_status3',
-            self.is_path_04_callback,
-            10
-        )
-        self.is_path_04:Bool = False
-
-        ## Publisher
-        # Publisher for cmd_vel
+        # =========================
+        # Publisher
+        # =========================
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        
+        ## TODO ゴール到達も見る
 
-        # Initialize flags and Twist message
-        self.go_flag   = True  # 初期状態をGOに設定
-        self.obstacle_detected = False #障害物検出フラグ
-        self.current_cmd_vel = Twist()
+        # =========================
+        # 基本状態フラグ
+        # =========================
+        self.go_flag = True                # SPACE で GO/NOGO 切り替え
+        self.current_cmd_vel = Twist()     # /cmd_vel_tmp からの現在コマンド
 
-        # For default stop signal
-        self.default_stop_cmd           = Twist()
-        self.default_stop_cmd.linear.x  = 0.0
+        # デフォルトの停止コマンド
+        self.default_stop_cmd = Twist()
+        self.default_stop_cmd.linear.x = 0.0
         self.default_stop_cmd.angular.z = 0.0
+
+        # =========================
+        # 停止ポイント / ゴール
+        # =========================
+        self.stop_points = [
+            (26.6831,  30.5581),  # 横断歩道1
+            (63.6472,  35.7471),  # 横断歩道2
+            (140.067,  29.0186),  # 横断歩道3
+            (223.646, -68.5382),  # 白線1
+            (222.879, -75.2085),  # 点字1
+            (221.272, -95.0025),  # 白線2
+            (224.8,   -97.1773),  # 点字2
+            ]   
         
-        # 複数の停止ポイント座標とゴール座標の設定
-        # 本番経路の停止点
-        # 停止点1 26.6831,  30.5581
-        # 停止点２ 64.4472, 35.7471  
-        #Target Point 2: Closest Point = (223.646, -68.5382), Index = 979 白線
-
-        #Target Point 3: Closest Point = (222.879, -75.2085), Index = 1055 点字
-
-        #Target Point 4: Closest Point = (221.272, -95.0025), Index = 1275 白線
-
-        #Target Point 5: Closest Point = (224.8, -97.1773), Index = 1326 点字
-        
-        #                    横断歩道1            横断歩道２　　　　　横断歩道3　　　　　 白線1　　　　　　　　点字1                 白線2              点字2
-        self.stop_points = [(26.6831,  30.5581), (63.6472, 35.7471),  (140.067, 29.0186), (223.646, -68.5382), (222.879, -75.2085), (221.272, -95.0025),(224.8, -97.1773)]  
-        self.goal = (-50.0, -50.0)  # ゴール座標を1点のみ設定
-        self.distance_threshold = 0.5
-        self.current_target_index = 0  # 最初の停止ポイントからスタート
-
-        # 現在のターゲット（停止ポイントまたはゴール）を設定
+        self.goal = (-50.0, -50.0)   # 最終ゴール
+        self.distance_threshold = 0.8
+        self.current_target_index = 0
         self.current_target = self.stop_points[self.current_target_index]
 
-        # キーボード入力監視用のスレッド
+        # 停止ポイント到達フラグ
+        self.reached_target_flag = False
+
+        # =========================
+        # 障害物処理
+        # =========================
+        # センサ値そのもの（True = 障害物あり）※obstacle_callbackで更新するだけ
+        self.obstacle_raw = False
+
+        # 「今、停止すべきかどうか」を表す内部フラグ（Timer で管理）
+        self.obstacle_detected = False
+
+        # センサが True になった時刻（継続している間は同じ障害物扱い）
+        self.obstacle_start_time = None
+
+        # ① 障害物検知 → 即停止
+        # ② obstacle_stop_duration 秒間は停止
+        # ③ それを過ぎたら「一度だけ」再開（同じ連続検知に対しては再度止まらない）
+        self.obstacle_stop_duration = 10.0  # [sec]
+
+        # 障害物の状態を周期的に監視する Timer（例: 10Hz）
+        self.obstacle_check_timer = self.create_timer(
+            0.1,
+            self.update_obstacle_state
+        )
+
+        # =========================
+        # DWA フラグ（タイムスタンプ方式）
+        # =========================
+        self.dwa_active = False
+        self.dwa_timeout = 1.0  # [sec] この時間メッセージが来なければ OFF 扱い
+        self.last_dwa_time = self.get_clock().now()
+
+        # 周期的に DWA のタイムアウトを監視する Timer（10Hz）
+        self.dwa_check_timer = self.create_timer(
+            0.1,
+            self.check_dwa_timeout
+        )
+
+        # =========================
+        # キーボード入力スレッド
+        # =========================
         self.input_thread = threading.Thread(target=self.monitor_keyboard_input)
-        self.input_thread.daemon = True  # プログラム終了時にスレッドも終了
+        self.input_thread.daemon = True
         self.input_thread.start()
 
-        self.get_logger().info('Node is running. Press SPACE to toggle GO/NOGO, Q to quit.\r')
+        self.get_logger().info(
+            'Node is running. Press SPACE to toggle GO/NOGO, '
+            'P to go to next target, Q to quit.\r'
+        )
 
-        # temporal ignore
-        self.ignore_duration  = 1.3 #duration
-        self.temporal_ignore_flag = False
-
-        self.obstacle_timer   = None
-        self.ignore_obstacles = False 
-        self.ignore_timer     = None
-
-        self.compensate_turn  = False
-        self.compensate_timer = None
-
-        self.ignore_twist_cmd = Twist()
-        self.ignore_twist_cmd.linear.x = 0.25  # 前進速度
-        self.ignore_twist_cmd.angular.z = -math.pi/5.5  # 右方向への角速度（負の値）
-
-        self.compensate_twist_cmd = Twist()
-        self.compensate_twist_cmd.linear.x = 0.4  # 前進速度
-        self.compensate_twist_cmd.angular.z = math.pi / 8  # 左回転の角速度
-
-        self.avoid_time = 3.0
-        self.return_time = 6.0
-
+    # ============================================================
+    # Keyboard handling
+    # ============================================================
     def monitor_keyboard_input(self):
-        """Monitor keyboard input and toggle go_flag on SPACE, P, and Q keys."""
+        """キーボード入力を監視し、SPACE / P / Q に応じて操作。"""
         while rclpy.ok():
             key = self.get_key()
-            if   key == ' ':
+            if key is None:
+                continue
+
+            if key == ' ':
                 self.toggle_go_flag()
             elif key == 'p':
                 self.resume_to_next_target()
             elif key == 'q':
-                self.shutdown_node()  # Qキーが押されたらノードを終了
+                self.shutdown_node()
+                break
 
     def toggle_go_flag(self):
-        """Toggle go_flag and log the state."""
+        """GO/NOGO をトグル。"""
         self.go_flag = not self.go_flag
         state = "GO" if self.go_flag else "NOGO"
         self.get_logger().info(f'State changed to: {state}\r')
-    
-    def is_avoidance_toggle(self,msg):
-        if   msg.data == True :
-            self.is_avoidance_area = True
-        elif msg.data == False:
-            self.is_avoidance_area = False
-        else :
-            return
-    
-    def is_path_04_callback(self, msg):
-        if msg.data == True:
-            self.is_path_04 = True
-        elif msg.data == False:
-            self.is_path_04 = False
-        else: return
-
-    def resume_to_next_target(self):
-        """Resume movement and update to the next target (stop point or goal)."""
-        if getattr(self, 'reached_target_flag', False) or getattr(self, 'reached_obstacle_flag', False):
-            self.get_logger().info("Resuming to the next target.\r")
-            self.reached_target_flag = False  # ゴールまたは停止ポイント到達フラグをリセット
-            self.reached_obstacle_flag = False
-            self.go_flag = True
-
-            # 次の停止ポイントまたはゴールに進む
-            self.current_target_index += 1
-            if self.current_target_index < len(self.stop_points):
-                # 次の停止ポイントに進む
-                self.current_target = self.stop_points[self.current_target_index]
-            else:
-                # すべての停止ポイントを通過したらゴールを設定
-                self.current_target = self.goal
-        #self.publish_cmd_vel()
-
-    def publish_cmd_vel(self):
-        """Publish the current_cmd_vel based on go_flag state."""
-        if self.temporal_ignore_flag == False:
-            # If self.temporal_ignore_flag is False, proceed to the main process
-            if self.go_flag:
-                if self.compensate_turn:
-                    cmd_msg = self.compensate_twist_cmd
-                    self.get_logger().info("Returning to path\r")
-                elif self.ignore_obstacles:
-                    cmd_msg = self.ignore_twist_cmd
-                    self.get_logger().info("Obstacle avoidance in progress\r")
-                elif not self.obstacle_detected:
-                    cmd_msg = self.current_cmd_vel
-                    self.get_logger().info("Normal operation in progress\r")
-                else:
-                    cmd_msg = self.default_stop_cmd 
-                    self.get_logger().info("Temporary stop due to obstacle detection\r")
-            # If NOGO state, publish a stop message
-            else:
-                cmd_msg = self.default_stop_cmd 
-                self.get_logger().info("Temporary stop\r")
-        else:
-            # Otherwise, obstacles will be ignored for 'self.ignore_duration' seconds.
-            cmd_msg = self.current_cmd_vel
-            self.get_logger().info("Proceeding while ignoring obstacles for 5 seconds\r")
-
-
-        
-        self.publisher.publish(cmd_msg)
-
-
-    def cmd_vel_tmp_callback(self, msg):
-        # cmd_vel_tmpの値を受け取り、現在の制御量を更新
-        self.current_cmd_vel = msg
         self.publish_cmd_vel()
-        
-    
-    def odom_callback(self, msg):
-        """Check proximity to current target and update go_flag accordingly."""
-        # 現在のターゲット（停止ポイントまたはゴール）の座標
-        target_x, target_y = self.current_target
 
-        # 現在の位置
-        self.current_x = msg.pose.pose.position.x
-        self.current_y = msg.pose.pose.position.y
-        self.distance_to_goal = math.hypot(target_x - self.current_x, target_y - self.current_y)
-
-        if self.is_avoidance_area :
-            self.get_logger().info("Avoidance Enabled\r")
-        else :
-            self.get_logger().info("Avoidance Disabled\r")
-        self.get_logger().info(f"Distance to Target {self.current_target_index + 1}: {self.distance_to_goal:.2f}\r")
-        self.get_logger().info(f"Current Position: ({self.current_x:.2f}, {self.current_y:.2f})\r")
-        self.get_logger().info(f"Target Position: ( {target_x:.2f},  {target_y:.2f})\r")
-
-
-        # ターゲット（停止ポイントまたはゴール）に到達した場合
-        if self.distance_to_goal < self.distance_threshold:
-            if self.current_target == self.goal:
-                # ゴールに到達した場合は停止して終了
-                self.get_logger().info("ゴールに到達しました。\r")
- 
-            else:
-                # 停止ポイントに到達した場合は一時停止
-                self.get_logger().info(f"停止ポイント {self.current_target_index + 1} : {self.stop_points[self.current_target_index]} に到達。NOGO状態に切り替えます。\r")
-                self.go_flag = False
-                self.reached_target_flag = True
-
-
-    def obstacle_callback(self, msg):
-        """Update obstacle_detected flag based on sensor data."""
-        if self.ignore_obstacles or self.compensate_turn:
-            return
-
-        if msg.data and not self.obstacle_detected:
-            # 障害物が新たに検出された場合
-            self.obstacle_detected = True
-            self.get_logger().info("Obstacle detected. Swiched NOGO.\r")
-
-            if self.obstacle_timer is None:
-                if self.is_path_04 == False:
-                    if self.is_avoidance_area == True:
-                        self.obstacle_timer = threading.Timer(10.0, self.reset_obstacle_detected)
-                        self.obstacle_timer.start()
-                    elif self.is_avoidance_area == False:
-                        self.obstacle_timer = threading.Timer(25.0, self.temporal_ignore_obstacle)
-                        self.obstacle_timer.start()
-            elif self.is_path_04 == True:
-                self.go_flag = False
-
-
-        elif not msg.data and self.obstacle_detected:
-            # 障害物がなくなった場合
-            self.obstacle_detected = False
-            self.get_logger().info("障害物がなくなりました。GO状態に切り替えます。\r")
-
-            if self.obstacle_timer is not None:
-                self.obstacle_timer.cancel()
-                self.obstacle_timer = None
-
-    # is_avoidance_areaではないときに、一定時間(ignore_duration)だけ無視して進行するためのフラグをtrueにする。経過後、falseにする  
-    def temporal_ignore_obstacle(self):
-        """10秒後に障害物無視フラグをTrueにし、さらに5秒後にFalseに戻す"""
-        self.temporal_ignore_flag = True  # 障害物を無視する状態に設定
-        self.get_logger().info("10秒経過。障害物を無視して動作を継続します。\r")
-        self.obstacle_detected = False
-
-        # 5秒後に障害物無視フラグを解除
-        if self.ignore_timer is None:
-            self.ignore_timer = threading.Timer(self.ignore_duration, self.reset_ignore_obstacles_flag)
-            self.ignore_timer.start()
-
-        # obstacle_timerをリセット
-        self.obstacle_timer = None
-
-    def reset_ignore_obstacles_flag(self):
-        """障害物無視フラグをFalseに戻す"""
-        self.temporal_ignore_flag = False
-        self.get_logger().info("5秒経過。障害物検知を再開します。\r")
-
-        # ignore_timerをリセット
-        self.ignore_timer = None
-
-
-
-    # 関数名は一旦無視
-    # スレッドで10秒後に呼ばれる、回避行動のトリガー関数
-    def reset_obstacle_detected(self):
-        """Reset obstacle_detected flag after timer expires."""
-        self.obstacle_detected = False
-        self.obstacle_timer = None
-        self.get_logger().info("10秒が経過しました。回避行動に移ります。\r")
-        self.ignore_obstacles = True
-
-        if self.ignore_timer is None:
-            self.ignore_timer = threading.Timer(self.avoid_time, self.reset_ignore_obstacles)
-            self.ignore_timer.start()
-
-    # トリガー関数で呼び出される、回避のために予め定めた動きを呼び出す回避関数
-    def reset_ignore_obstacles(self):
-        """Reset ignore_obstacles flag after timer expires."""
-        self.ignore_obstacles = False
-        self.ignore_timer = None
-        self.get_logger().info("5秒が経過しました。補正します。\r")
-
-        self.compensate_turn = True
-
-        if self.compensate_timer is None:
-            self.compensate_timer = threading.Timer(self.return_time, self.reset_compensate_turn)
-            self.compensate_timer.start()
-
-    # 回避関数に呼び出される、回避動作から経路に戻るために補正する回帰関数
-    def reset_compensate_turn(self):
-        """Reset compensate_turn flag after timer expires."""
-        self.compensate_turn = False
-        self.compensate_timer = None
-        self.get_logger().info("補正期間が終了しました。通常の動作に戻ります。\r")
-        
-
-    # handle keyboad input
     def get_key(self):
-        """Non-blocking keyboard input getter for single character."""
+        """非ブロッキングで1文字だけキーボード入力を取得。"""
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(sys.stdin.fileno())
-            if select.select([sys.stdin], [], [], 0.1)[0]:  # タイムアウトを0.1秒に設定
+            if select.select([sys.stdin], [], [], 0.1)[0]:
                 key = sys.stdin.read(1)
                 return key.lower()
             return None
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+    # ============================================================
+    # Target management
+    # ============================================================
+    def resume_to_next_target(self):
+        """停止ポイント到達後、次のターゲット（停止ポイント or ゴール）へ進む。"""
+        if not self.reached_target_flag:
+            self.get_logger().info("No reached target flag. Ignore 'p' key.\r")
+            return
 
-    # shutdown node
+        self.get_logger().info("Resuming to the next target.\r")
+        self.reached_target_flag = False
+        self.go_flag = True
+
+        # 次の停止ポイント or ゴールへ
+        self.current_target_index += 1
+        if self.current_target_index < len(self.stop_points):
+            self.current_target = self.stop_points[self.current_target_index]
+            self.get_logger().info(
+                f"Next stop point: {self.current_target_index + 1} at {self.current_target}\r"
+            )
+        else:
+            self.current_target = self.goal
+            self.get_logger().info(
+                f"All stop points passed. Heading to goal: {self.goal}\r"
+            )
+
+        self.publish_cmd_vel()
+
+    # ============================================================
+    # cmd_vel publishing
+    # ============================================================
+    def publish_cmd_vel(self):
+        """最終的な /cmd_vel を出力する。"""
+        if not self.go_flag:
+            # NOGO のときは必ず停止
+            cmd_msg = self.default_stop_cmd
+            self.get_logger().info("NOGO: stop\r")
+        # DWA ON の間は障害物停止を無視する
+        elif self.obstacle_detected and not self.dwa_active:
+            cmd_msg = self.default_stop_cmd
+            self.get_logger().info("Obstacle detected (DWA OFF): stop\r")
+        else:
+            cmd_msg = self.current_cmd_vel
+            if self.dwa_active:
+                self.get_logger().info("DWA ON: ignore obstacle and run normally\r")
+            else:
+                self.get_logger().info("Normal operation\r")
+
+        self.publisher.publish(cmd_msg)
+
+    # ============================================================
+    # Callbacks
+    # ============================================================
+    def cmd_vel_tmp_callback(self, msg: Twist):
+        """/cmd_vel_tmp を受け取り、状態に応じて /cmd_vel を出す。"""
+        self.current_cmd_vel = msg
+        self.publish_cmd_vel()
+
+    def odom_callback(self, msg: Odometry):
+        """停止ポイント・ゴールまでの距離を監視し、停止ポイント到達で NOGO にする。"""
+        target_x, target_y = self.current_target
+
+        current_x = msg.pose.pose.position.x
+        current_y = msg.pose.pose.position.y
+        distance_to_target = math.hypot(target_x - current_x, target_y - current_y)
+
+        self.get_logger().info(
+            f"Distance to Target {self.current_target_index + 1}: {distance_to_target:.2f}\r"
+        )
+        self.get_logger().info(
+            f"Current Position: ({current_x:.2f}, {current_y:.2f}), "
+            f"Target: ({target_x:.2f}, {target_y:.2f})\r"
+        )
+
+        if distance_to_target < self.distance_threshold:
+            if self.current_target == self.goal:
+                # ゴール到達（ここではログのみ。必要なら go_flag=False してもよい）
+                self.get_logger().info("ゴールに到達しました。\r")
+            else:
+                # 停止ポイント到達 → NOGO に切り替え
+                self.get_logger().info(
+                    f"停止ポイント {self.current_target_index + 1} : "
+                    f"{self.stop_points[self.current_target_index]} に到達。"
+                    "NOGO状態に切り替えます。\r"
+                )
+                self.go_flag = False
+                self.reached_target_flag = True
+                self.publish_cmd_vel()
+
+    def obstacle_callback(self, msg: Bool):
+        """
+        センサ値を内部変数に書き込むだけ。
+        停止/再開の判断は update_obstacle_state() の Timer 側で行う。
+
+        - dwa_active が True のときは「障害物処理そのものを無視」するので、
+          センサ値も更新しない。
+        """
+        if self.dwa_active:
+            # DWA 有効中は障害物を完全に無視（内部状態も変えない）
+            return
+
+        # DWA OFF のときのみ生のセンサ値を更新
+        self.obstacle_raw = msg.data
+
+    def update_obstacle_state(self):
+        """
+        Timer コールバック。
+        obstacle_raw と経過時間にもとづき、
+        obstacle_detected（「止まるべきか」）を管理する。
+
+        仕様:
+          - obstacle_raw が False → obstacle_detected = False（停止指令解除）
+          - obstacle_raw が False→True になった瞬間:
+                obstacle_start_time を記録し、obstacle_detected = True（即停止）
+          - obstacle_raw が True のまま:
+                経過時間 < obstacle_stop_duration の間は停止継続
+                経過時間 >= obstacle_stop_duration になったら一度だけ
+                obstacle_detected = False にして進ませる
+                （同じ連続 True に対して再度 True にはしない）
+        """
+        now = self.get_clock().now()
+
+        if not self.obstacle_raw:
+            # 障害物なし
+            if self.obstacle_detected or self.obstacle_start_time is not None:
+                # 状態が変化したときだけログ＆publish
+                self.obstacle_detected = False
+                self.obstacle_start_time = None
+                self.get_logger().info("Obstacle state: clear. Resume if other conditions allow.\r")
+                self.publish_cmd_vel()
+            return
+
+        # ここから obstacle_raw == True (障害物あり)
+        if self.obstacle_start_time is None:
+            # 立ち上がりエッジ：新しい障害物とみなす
+            self.obstacle_start_time = now
+            self.obstacle_detected = True
+            self.get_logger().info("Obstacle detected: start stopping period.\r")
+            self.publish_cmd_vel()
+            return
+
+        # 継続検知中：経過時間で制御
+        elapsed = (now - self.obstacle_start_time).nanoseconds * 1e-9
+
+        if elapsed < self.obstacle_stop_duration:
+            # 停止継続
+            if not self.obstacle_detected:
+                self.obstacle_detected = True
+                self.get_logger().info(
+                    f"Obstacle still present (<{self.obstacle_stop_duration}s). Keep stopping.\r"
+                )
+                self.publish_cmd_vel()
+        else:
+            # 規定時間経過後：一度だけ再開を試みる
+            if self.obstacle_detected:
+                self.obstacle_detected = False
+                self.get_logger().info(
+                    f"Obstacle present for {elapsed:.2f}s >= {self.obstacle_stop_duration}s. "
+                    "Ignore once and try to move.\r"
+                )
+                self.publish_cmd_vel()
+            # その後は obstacle_raw が False になるまで、
+            # 同じ障害物に対しては「再度止まらない」
+
+    def dwa_active_callback(self, msg: Bool):
+        """
+        DWA からのフラグが来るたびに現在時刻を更新。
+        True が定期的に来ている間だけ self.dwa_active = True とし、
+        一定時間来なければ自動で OFF に戻す。
+        """
+        now = self.get_clock().now()
+        self.last_dwa_time = now  # タイムスタンプ更新
+
+        self.dwa_active = msg.data
+        state = "ON" if self.dwa_active else "OFF"
+        self.get_logger().info(f"DWA callback received: {state}\r")
+
+    def check_dwa_timeout(self):
+        """最後に受信した DWA 時刻からの経過時間を調べ、タイムアウトしたら OFF にする。"""
+        now = self.get_clock().now()
+        dt = (now - self.last_dwa_time).nanoseconds * 1e-9  # 秒に変換
+
+        if dt > self.dwa_timeout:
+            if self.dwa_active:
+                self.get_logger().info(
+                    f"DWA timeout ({dt:.2f}s). Setting DWA OFF.\r"
+                )
+            self.dwa_active = False
+
+    # ============================================================
+    # Shutdown
+    # ============================================================
     def shutdown_node(self):
-        """Shutdown the node and stop publishing to /cmd_vel."""
+        """ノードをシャットダウンし、/cmd_vel を停止させる。"""
         self.get_logger().info('Shutting down the node.\r')
         self.publisher.publish(self.default_stop_cmd)
 
-        if self.obstacle_timer is not None:
-            self.obstacle_timer.cancel()
-            self.obstacle_timer = None
-        if self.ignore_timer is not None:
-            self.ignore_timer.cancel()
-            self.ignore_timer = None
-        if self.compensate_timer is not None:
-            self.compensate_timer.cancel()
-            self.compensate_timer = None
+        # rclpy の Timer はノード破棄時に自動で止まる
 
-        rclpy.shutdown()  # ROS2のシャットダウン
-        self.destroy_node()  # ノードの破棄
+        self.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -373,8 +389,7 @@ def main(args=None):
         pass
     finally:
         node.shutdown_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
