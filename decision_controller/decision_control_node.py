@@ -3,6 +3,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
+from geometry_msgs.msg import PoseStamped 
 import sys
 import termios
 import tty
@@ -34,6 +35,15 @@ class CmdVelControlNode(Node):
             self.odom_callback,
             10
         )
+        
+        # GNSS Pose: スイッチポイント監視用（座標系が odom と異なる）
+        self.gnss_subscription = self.create_subscription(
+            PoseStamped,          # ★ 実際のメッセージ型に合わせて変更
+            'gnss_pose',          # ★ 実際のトピック名に合わせて変更
+            self.gnss_callback,   # ★ 新しく作るコールバック
+            10
+        )
+
 
         # /obstacle_detected: 障害物検知（True = 障害物あり）
         self.obstacle_subscription = self.create_subscription(
@@ -294,6 +304,7 @@ class CmdVelControlNode(Node):
         # =========================
         # スイッチポイントの距離チェック
         # =========================
+        '''
         if self.current_switch_point_index < len(self.switch_points):
             sx, sy = self.current_switch_point
             distance_to_switch = math.hypot(sx - current_x, sy - current_y)
@@ -324,6 +335,54 @@ class CmdVelControlNode(Node):
                 if self.current_switch_point_index < len(self.switch_points):
                     self.current_switch_point = \
                         self.switch_points[self.current_switch_point_index]
+                        
+                        '''
+
+    def gnss_callback(self, msg: PoseStamped):
+        """
+        GNSS座標系での位置を監視し、switch_points への接近を判定するコールバック。
+        座標系は switch_points と同じ前提（GNSS 座標系）。
+
+        - switch_points[0] に到達したら gnss_emcl_1 に True を一度だけ publish
+        - switch_points[1] に到達したら gnss_emcl_2 に True を一度だけ publish
+        """
+        # GNSS での現在位置
+        current_x = msg.pose.position.x
+        current_y = msg.pose.position.y
+
+        # もうすべてのスイッチポイントを処理し終わっていたら何もしない
+        if self.current_switch_point_index >= len(self.switch_points):
+            return
+
+        sx, sy = self.current_switch_point
+        distance_to_switch = math.hypot(sx - current_x, sy - current_y)
+
+        self.get_logger().info(
+            f"[GNSS] Distance to Switch Point {self.current_switch_point_index + 1}: "
+            f"{distance_to_switch:.2f}\r"
+        )
+
+        if distance_to_switch < self.distance_threshold:
+            # 一度だけ True を publish
+            msg_bool = Bool()
+            msg_bool.data = True
+
+            if self.current_switch_point_index == 0:
+                self.goal_pub_1.publish(msg_bool)
+                self.get_logger().info(
+                    "Switch point 1 reached (GNSS): published gnss_emcl_1 = True\r"
+                )
+            elif self.current_switch_point_index == 1:
+                self.goal_pub_2.publish(msg_bool)
+                self.get_logger().info(
+                    "Switch point 2 reached (GNSS): published gnss_emcl_2 = True\r"
+                )
+
+            # 同じポイントで何度も publish しないように index を進める
+            self.current_switch_point_index += 1
+            if self.current_switch_point_index < len(self.switch_points):
+                self.current_switch_point = \
+                    self.switch_points[self.current_switch_point_index]
 
     def odom_callback_(self, msg: Odometry):
         """停止ポイント・ゴールまでの距離を監視し、停止ポイント到達で NOGO にする。"""
