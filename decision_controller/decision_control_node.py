@@ -82,14 +82,28 @@ class CmdVelControlNode(Node):
             (224.8,   -97.1773),  # 点字2
             ]   
         
-        self.goal = (-50.0, -50.0)   # 最終ゴール
         self.distance_threshold = 0.8
-        self.current_target_index = 0
-        self.current_target = self.stop_points[self.current_target_index]
+        self.current_stop_point_index = 0
+        self.current_target = self.stop_points[self.current_stop_point_index]
+
+        self.goal = (-50.0, -50.0)   # 最終ゴール
 
         # 停止ポイント到達フラグ
         self.reached_target_flag = False
-
+        
+        
+        self.switch_points = [
+            (30.0, 30.0),    # GNSS→EMCL ①
+            (70.0, 40.0),    # GNSS→EMCL ②
+        ]
+        self.current_switch_point_index = 0
+        self.current_switch_point = self.switch_points[self.current_switch_point_index] 
+        
+        # リスト，Switch Pointの一つ目に到達したら一度だけδTrueをpublishする
+        self.goal_pub_1 = self.create_publisher(Bool, 'gnss_emcl_1', 10)
+        # 二つ目に到達したら一度だけTrueをpublishする
+        self.goal_pub_2 = self.create_publisher(Bool, 'gnss_emcl_2', 10)
+        
         # =========================
         # 障害物処理
         # =========================
@@ -190,11 +204,11 @@ class CmdVelControlNode(Node):
         self.go_flag = True
 
         # 次の停止ポイント or ゴールへ
-        self.current_target_index += 1
-        if self.current_target_index < len(self.stop_points):
-            self.current_target = self.stop_points[self.current_target_index]
+        self.current_stop_point_index += 1
+        if self.current_stop_point_index < len(self.stop_points):
+            self.current_target = self.stop_points[self.current_stop_point_index]
             self.get_logger().info(
-                f"Next stop point: {self.current_target_index + 1} at {self.current_target}\r"
+                f"Next stop point: {self.current_stop_point_index + 1} at {self.current_target}\r"
             )
         else:
             self.current_target = self.goal
@@ -235,6 +249,83 @@ class CmdVelControlNode(Node):
         self.publish_cmd_vel()
 
     def odom_callback(self, msg: Odometry):
+        """
+        停止ポイント / ゴール / スイッチポイント までの距離を監視する。
+        - 停止ポイント到達 → NOGO にして一時停止（resume_to_next_target で再開）
+        - ゴール到達       → NOGO にして停止（必要ならここで処理を追加）
+        - スイッチポイント到達 → 一度だけ gnss_emcl_1 / gnss_emcl_2 に True を publish
+        """
+        # 現在位置
+        current_x = msg.pose.pose.position.x
+        current_y = msg.pose.pose.position.y
+
+        # =========================
+        # 停止ポイント / ゴールの距離チェック
+        # =========================
+        target_x, target_y = self.current_target
+        distance_to_target = math.hypot(target_x - current_x, target_y - current_y)
+
+        self.get_logger().info(
+            f"Distance to Target {self.current_stop_point_index + 1}: {distance_to_target:.2f}\r"
+        )
+        self.get_logger().info(
+            f"Current Position: ({current_x:.2f}, {current_y:.2f}), "
+            f"Target: ({target_x:.2f}, {target_y:.2f})\r"
+        )
+
+        if distance_to_target < self.distance_threshold:
+            if self.current_target == self.goal:
+                # ゴール到達
+                self.get_logger().info("ゴールに到達しました。NOGO状態に切り替えます。\r")
+                self.go_flag = False
+                self.reached_target_flag = False  # ゴールは「次へ進む」対象ではない想定
+                self.publish_cmd_vel()
+            else:
+                # 停止ポイント到達 → NOGO に切り替え
+                self.get_logger().info(
+                    f"停止ポイント {self.current_stop_point_index + 1} : "
+                    f"{self.stop_points[self.current_stop_point_index]} に到達。"
+                    "NOGO状態に切り替えます。\r"
+                )
+                self.go_flag = False
+                self.reached_target_flag = True
+                self.publish_cmd_vel()
+
+        # =========================
+        # スイッチポイントの距離チェック
+        # =========================
+        if self.current_switch_point_index < len(self.switch_points):
+            sx, sy = self.current_switch_point
+            distance_to_switch = math.hypot(sx - current_x, sy - current_y)
+
+            self.get_logger().info(
+                f"Distance to Switch Point {self.current_switch_point_index + 1}: "
+                f"{distance_to_switch:.2f}\r"
+            )
+
+            if distance_to_switch < self.distance_threshold:
+                # 一度だけ True を publish
+                msg_bool = Bool()
+                msg_bool.data = True
+
+                if self.current_switch_point_index == 0:
+                    self.goal_pub_1.publish(msg_bool)
+                    self.get_logger().info(
+                        "Switch point 1 reached: published gnss_emcl_1 = True\r"
+                    )
+                elif self.current_switch_point_index == 1:
+                    self.goal_pub_2.publish(msg_bool)
+                    self.get_logger().info(
+                        "Switch point 2 reached: published gnss_emcl_2 = True\r"
+                    )
+
+                # 同じポイントで何度も publish しないように index を進める
+                self.current_switch_point_index += 1
+                if self.current_switch_point_index < len(self.switch_points):
+                    self.current_switch_point = \
+                        self.switch_points[self.current_switch_point_index]
+
+    def odom_callback_(self, msg: Odometry):
         """停止ポイント・ゴールまでの距離を監視し、停止ポイント到達で NOGO にする。"""
         target_x, target_y = self.current_target
 
@@ -243,7 +334,7 @@ class CmdVelControlNode(Node):
         distance_to_target = math.hypot(target_x - current_x, target_y - current_y)
 
         self.get_logger().info(
-            f"Distance to Target {self.current_target_index + 1}: {distance_to_target:.2f}\r"
+            f"Distance to Target {self.current_stop_point_index + 1}: {distance_to_target:.2f}\r"
         )
         self.get_logger().info(
             f"Current Position: ({current_x:.2f}, {current_y:.2f}), "
@@ -257,8 +348,8 @@ class CmdVelControlNode(Node):
             else:
                 # 停止ポイント到達 → NOGO に切り替え
                 self.get_logger().info(
-                    f"停止ポイント {self.current_target_index + 1} : "
-                    f"{self.stop_points[self.current_target_index]} に到達。"
+                    f"停止ポイント {self.current_stop_point_index + 1} : "
+                    f"{self.stop_points[self.current_stop_point_index]} に到達。"
                     "NOGO状態に切り替えます。\r"
                 )
                 self.go_flag = False
