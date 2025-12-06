@@ -92,7 +92,7 @@ class CmdVelControlNode(Node):
             (224.8,   -97.1773),  # 点字2
             ]   
         
-        self.distance_threshold = 0.8
+        self.distance_threshold = 4.5
         self.current_stop_point_index = 0
         self.current_target = self.stop_points[self.current_stop_point_index]
 
@@ -103,8 +103,9 @@ class CmdVelControlNode(Node):
         
         
         self.switch_points = [
-            (30.0, 30.0),    # GNSS→EMCL ①
-            (70.0, 40.0),    # GNSS→EMCL ②
+            (-2.170683,36.495309),
+            (36.083191,140.076971),    # GNSS→EMCL ①
+            #(70.0, 40.0),    # GNSS→EMCL ②
         ]
         self.current_switch_point_index = 0
         self.current_switch_point = self.switch_points[self.current_switch_point_index] 
@@ -304,14 +305,19 @@ class CmdVelControlNode(Node):
         # =========================
         # スイッチポイントの距離チェック
         # =========================
-        '''
+        self.get_logger().info(
+            f"current_switch_point_index {self.current_switch_point_index}, "
+            f"len(self.switch_points) {self.switch_points}: \r"
+        )
         if self.current_switch_point_index < len(self.switch_points):
             sx, sy = self.current_switch_point
             distance_to_switch = math.hypot(sx - current_x, sy - current_y)
 
             self.get_logger().info(
-                f"Distance to Switch Point {self.current_switch_point_index + 1}: "
+                f"Distance to Switch Point by ODOM{self.current_switch_point_index + 1}: "
                 f"{distance_to_switch:.2f}\r"
+                f"x={sx},y={sy}"
+                f"Current Position: ({current_x:.2f}, {current_y:.2f})"
             )
 
             if distance_to_switch < self.distance_threshold:
@@ -336,7 +342,7 @@ class CmdVelControlNode(Node):
                     self.current_switch_point = \
                         self.switch_points[self.current_switch_point_index]
                         
-                        '''
+                        
 
     def gnss_callback(self, msg: PoseStamped):
         """
@@ -357,6 +363,7 @@ class CmdVelControlNode(Node):
         sx, sy = self.current_switch_point
         distance_to_switch = math.hypot(sx - current_x, sy - current_y)
 
+
         self.get_logger().info(
             f"[GNSS] Distance to Switch Point {self.current_switch_point_index + 1}: "
             f"{distance_to_switch:.2f}\r"
@@ -368,12 +375,12 @@ class CmdVelControlNode(Node):
             msg_bool.data = True
 
             if self.current_switch_point_index == 0:
-                self.goal_pub_1.publish(msg_bool)
+                #self.goal_pub_1.publish(msg_bool)
                 self.get_logger().info(
                     "Switch point 1 reached (GNSS): published gnss_emcl_1 = True\r"
                 )
             elif self.current_switch_point_index == 1:
-                self.goal_pub_2.publish(msg_bool)
+                #self.goal_pub_2.publish(msg_bool)
                 self.get_logger().info(
                     "Switch point 2 reached (GNSS): published gnss_emcl_2 = True\r"
                 )
@@ -383,38 +390,9 @@ class CmdVelControlNode(Node):
             if self.current_switch_point_index < len(self.switch_points):
                 self.current_switch_point = \
                     self.switch_points[self.current_switch_point_index]
-
-    def odom_callback_(self, msg: Odometry):
-        """停止ポイント・ゴールまでの距離を監視し、停止ポイント到達で NOGO にする。"""
-        target_x, target_y = self.current_target
-
-        current_x = msg.pose.pose.position.x
-        current_y = msg.pose.pose.position.y
-        distance_to_target = math.hypot(target_x - current_x, target_y - current_y)
-
-        self.get_logger().info(
-            f"Distance to Target {self.current_stop_point_index + 1}: {distance_to_target:.2f}\r"
-        )
-        self.get_logger().info(
-            f"Current Position: ({current_x:.2f}, {current_y:.2f}), "
-            f"Target: ({target_x:.2f}, {target_y:.2f})\r"
-        )
-
-        if distance_to_target < self.distance_threshold:
-            if self.current_target == self.goal:
-                # ゴール到達（ここではログのみ。必要なら go_flag=False してもよい）
-                self.get_logger().info("ゴールに到達しました。\r")
-            else:
-                # 停止ポイント到達 → NOGO に切り替え
-                self.get_logger().info(
-                    f"停止ポイント {self.current_stop_point_index + 1} : "
-                    f"{self.stop_points[self.current_stop_point_index]} に到達。"
-                    "NOGO状態に切り替えます。\r"
-                )
-                self.go_flag = False
-                self.reached_target_flag = True
-                self.publish_cmd_vel()
-
+    
+    
+    
     def obstacle_callback(self, msg: Bool):
         """
         センサ値を内部変数に書き込むだけ。
