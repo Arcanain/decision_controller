@@ -10,6 +10,7 @@ import tty
 import select
 import threading
 import math
+from rclpy.duration import Duration  
 
 
 class CmdVelControlNode(Node):
@@ -21,52 +22,24 @@ class CmdVelControlNode(Node):
         # Subscribers
         # =========================
         # /cmd_vel_tmp: ローカルプランナなどからの元の速度指令
-        self.cmd_vel_subscription = self.create_subscription(
-            Twist,
-            'cmd_vel_tmp',
-            self.cmd_vel_tmp_callback,
-            20
-        )
+        self.cmd_vel_subscription = self.create_subscription(Twist,'cmd_vel_tmp',self.cmd_vel_tmp_callback,20)
 
         # /odom: 自己位置
-        self.odom_subscription = self.create_subscription(
-            Odometry,
-            'odom',
-            self.odom_callback,
-            10
-        )
+        self.odom_subscription = self.create_subscription(Odometry,'odom',self.odom_callback,10)
         
-        # GNSS Pose: スイッチポイント監視用（座標系が odom と異なる）
-        self.gnss_subscription = self.create_subscription(
-            PoseStamped,          # ★ 実際のメッセージ型に合わせて変更
-            'gnss_pose',          # ★ 実際のトピック名に合わせて変更
-            self.gnss_callback,   # ★ 新しく作るコールバック
-            10
-        )
-
 
         # /obstacle_detected: 障害物検知（True = 障害物あり）
-        self.obstacle_subscription = self.create_subscription(
-            Bool,
-            'obstacle_detected',
-            self.obstacle_callback,
-            10
-        )
+        self.obstacle_subscription = self.create_subscription(Bool,'obstacle_detected',self.obstacle_callback,10)
 
         # /dwa_active: DWA が現在有効かどうか
-        self.dwa_active_subscription = self.create_subscription(
-            Bool,
-            'dwa_active',
-            self.dwa_active_callback,
-            10
-        )
+        self.dwa_active_subscription = self.create_subscription(Bool,'dwa_active',self.dwa_active_callback,10)
+
 
         # =========================
         # Publisher
         # =========================
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         
-        ## TODO ゴール到達も見る
 
         # =========================
         # 基本状態フラグ
@@ -82,8 +55,9 @@ class CmdVelControlNode(Node):
         # =========================
         # 停止ポイント / ゴール
         # =========================
+        # Odom 座標系での停止ポイントリストを格納すること！
         self.stop_points = [
-            (26.6831,  30.5581),  # 横断歩道1
+            (26.45352,  30.05956),  # 横断歩道1 # TODO 更新
             (63.6472,  35.7471),  # 横断歩道2
             (140.067,  29.0186),  # 横断歩道3
             (223.646, -68.5382),  # 白線1
@@ -92,8 +66,8 @@ class CmdVelControlNode(Node):
             (224.8,   -97.1773),  # 点字2
             ]   
         
-        self.distance_threshold = 4.5
-        self.current_stop_point_index = 0
+        self.distance_threshold = 2.0 #[m]
+        self.current_stop_point_index = 0 # 最初の停止ポイントからスタート
         self.current_target = self.stop_points[self.current_stop_point_index]
 
         self.goal = (-50.0, -50.0)   # 最終ゴール
@@ -103,17 +77,21 @@ class CmdVelControlNode(Node):
         
         
         self.switch_points = [
-            (-2.170683,36.495309),
-            (36.083191,140.076971),    # GNSS→EMCL ①
-            #(70.0, 40.0),    # GNSS→EMCL ②
-        ]
+            (-2.170683,36.495309),# GNSS→EMCL ①
+            (2.0831845,33.10387), # GNSS with DWA
+            ]
+        
+        self.switch_publish_until = None
+        self.switch_reached_id = None
+        self.switch_pub_timer = self.create_timer(0.1, self.switch_publish_timer_cb)
+        
         self.current_switch_point_index = 0
         self.current_switch_point = self.switch_points[self.current_switch_point_index] 
         
-        # リスト，Switch Pointの一つ目に到達したら一度だけδTrueをpublishする
+        # リスト，Switch Pointの一つ目に到達したらTrueをpublishする
         self.goal_pub_1 = self.create_publisher(Bool, 'gnss_emcl_1', 10)
-        # 二つ目に到達したら一度だけTrueをpublishする
-        self.goal_pub_2 = self.create_publisher(Bool, 'gnss_emcl_2', 10)
+        # 二つ目に到達したらTrueをpublishする
+        self.goal_pub_2 = self.create_publisher(Bool, 'gnss_dwa_on', 10)
         
         # =========================
         # 障害物処理
@@ -133,10 +111,7 @@ class CmdVelControlNode(Node):
         self.obstacle_stop_duration = 10.0  # [sec]
 
         # 障害物の状態を周期的に監視する Timer（例: 10Hz）
-        self.obstacle_check_timer = self.create_timer(
-            0.1,
-            self.update_obstacle_state
-        )
+        self.obstacle_check_timer = self.create_timer(0.1, self.update_obstacle_state)
 
         # =========================
         # DWA フラグ（タイムスタンプ方式）
@@ -166,28 +141,6 @@ class CmdVelControlNode(Node):
     # ============================================================
     # Keyboard handling
     # ============================================================
-    def monitor_keyboard_input(self):
-        """キーボード入力を監視し、SPACE / P / Q に応じて操作。"""
-        while rclpy.ok():
-            key = self.get_key()
-            if key is None:
-                continue
-
-            if key == ' ':
-                self.toggle_go_flag()
-            elif key == 'p':
-                self.resume_to_next_target()
-            elif key == 'q':
-                self.shutdown_node()
-                break
-
-    def toggle_go_flag(self):
-        """GO/NOGO をトグル。"""
-        self.go_flag = not self.go_flag
-        state = "GO" if self.go_flag else "NOGO"
-        self.get_logger().info(f'State changed to: {state}\r')
-        self.publish_cmd_vel()
-
     def get_key(self):
         """非ブロッキングで1文字だけキーボード入力を取得。"""
         fd = sys.stdin.fileno()
@@ -200,17 +153,51 @@ class CmdVelControlNode(Node):
             return None
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    
+    
+    def monitor_keyboard_input(self):
+        """キーボード入力を監視し、SPACE / P / Q に応じて操作。"""
+        while rclpy.ok():
+            key = self.get_key()
+            if key is None:
+                continue
 
+            if key == ' ':
+                self.toggle_go_flag()           # スペースキーで GO/NOGO 切り替え
+            elif key == 'p':
+                # target 到達後でなければ無視する
+                if not self.reached_target_flag:
+                    self.get_logger().info("Not at a reached target. 'p' key ignored.\r")
+                    continue
+                self.resume_to_next_target()    # 'p' キーで次のターゲットへ進む
+            elif key == 'q':
+                self.shutdown_node()            # 'q' キーでノード終了
+                break
+
+
+    def toggle_go_flag(self):
+        """GO/NOGO をトグル。"""
+        self.go_flag = not self.go_flag
+        
+        # LOGGING
+        state = "GO" if self.go_flag else "NOGO"
+        self.get_logger().info(f'State changed to: {state}\r')
+        
+        # Publish updated cmd_vel
+        self.publish_cmd_vel()
+
+    
     # ============================================================
     # Target management
     # ============================================================
     def resume_to_next_target(self):
-        """停止ポイント到達後、次のターゲット（停止ポイント or ゴール）へ進む。"""
+        # 
+        # 停止ポイント到達後、次のターゲット（停止ポイント or ゴール）へ進む
         if not self.reached_target_flag:
             self.get_logger().info("No reached target flag. Ignore 'p' key.\r")
             return
-
         self.get_logger().info("Resuming to the next target.\r")
+        
         self.reached_target_flag = False
         self.go_flag = True
 
@@ -226,7 +213,7 @@ class CmdVelControlNode(Node):
             self.get_logger().info(
                 f"All stop points passed. Heading to goal: {self.goal}\r"
             )
-
+            
         self.publish_cmd_vel()
 
     # ============================================================
@@ -237,11 +224,17 @@ class CmdVelControlNode(Node):
         if not self.go_flag:
             # NOGO のときは必ず停止
             cmd_msg = self.default_stop_cmd
-            self.get_logger().info("NOGO: stop\r")
+            self.get_logger().info("[NOGO]: stop\r")
+        
         # DWA ON の間は障害物停止を無視する
         elif self.obstacle_detected and not self.dwa_active:
             cmd_msg = self.default_stop_cmd
             self.get_logger().info("Obstacle detected (DWA OFF): stop\r")
+            
+        elif self.switch_publish_until is not None:
+            cmd_msg = self.default_stop_cmd
+            self.get_logger().info("At Switch Point publish period: stop\r")
+        
         else:
             cmd_msg = self.current_cmd_vel
             if self.dwa_active:
@@ -258,6 +251,9 @@ class CmdVelControlNode(Node):
         """/cmd_vel_tmp を受け取り、状態に応じて /cmd_vel を出す。"""
         self.current_cmd_vel = msg
         self.publish_cmd_vel()
+        #self.get_logger().info(
+        #    f"Distance to [STOP] Target(index) {self.current_stop_point_index}: {distance_to_target:.2f}\r"
+        #)
 
     def odom_callback(self, msg: Odometry):
         """
@@ -277,14 +273,14 @@ class CmdVelControlNode(Node):
         distance_to_target = math.hypot(target_x - current_x, target_y - current_y)
 
         self.get_logger().info(
-            f"Distance to Target {self.current_stop_point_index + 1}: {distance_to_target:.2f}\r"
+            f"Distance to [STOP] Target(index) {self.current_stop_point_index}: {distance_to_target:.2f}\r"
         )
         self.get_logger().info(
-            f"Current Position: ({current_x:.2f}, {current_y:.2f}), "
+            f"Current Position: ({current_x:.2f}, {current_y:.2f}), \r"
             f"Target: ({target_x:.2f}, {target_y:.2f})\r"
         )
 
-        if distance_to_target < self.distance_threshold:
+        if distance_to_target < self.distance_threshold - 1.2:
             if self.current_target == self.goal:
                 # ゴール到達
                 self.get_logger().info("ゴールに到達しました。NOGO状態に切り替えます。\r")
@@ -305,94 +301,78 @@ class CmdVelControlNode(Node):
         # =========================
         # スイッチポイントの距離チェック
         # =========================
-        self.get_logger().info(
-            f"current_switch_point_index {self.current_switch_point_index}, "
-            f"len(self.switch_points) {self.switch_points}: \r"
-        )
+        #self.get_logger().info(
+        #    f"current_switch_point_index {self.current_switch_point_index}, "
+        #    f"len(self.switch_points) {self.switch_points}: \r"
+        #)
+        
+        ## Switch Point 到達判定
         if self.current_switch_point_index < len(self.switch_points):
             sx, sy = self.current_switch_point
             distance_to_switch = math.hypot(sx - current_x, sy - current_y)
 
             self.get_logger().info(
-                f"Distance to Switch Point by ODOM{self.current_switch_point_index + 1}: "
+                f"Distance to Switch Point (index=){self.current_switch_point_index} by [Odom]: "
                 f"{distance_to_switch:.2f}\r"
                 f"x={sx},y={sy}"
                 f"Current Position: ({current_x:.2f}, {current_y:.2f})"
             )
 
+
             if distance_to_switch < self.distance_threshold:
-                # 一度だけ True を publish
-                msg_bool = Bool()
-                msg_bool.data = True
+                # ==== ここが「到達したときに一度だけやる仕事」 ====
+                # どのスイッチポイントに到達したか記録（0,1,...）
+                self.switch_reached_id = self.current_switch_point_index
 
-                if self.current_switch_point_index == 0:
-                    self.goal_pub_1.publish(msg_bool)
-                    self.get_logger().info(
-                        "Switch point 1 reached: published gnss_emcl_1 = True\r"
-                    )
-                elif self.current_switch_point_index == 1:
-                    self.goal_pub_2.publish(msg_bool)
-                    self.get_logger().info(
-                        "Switch point 2 reached: published gnss_emcl_2 = True\r"
-                    )
+                # これから 1.0 秒間だけ True を連続 publish する
+                self.switch_publish_until = (
+                    self.get_clock().now() + Duration(seconds=10.0)
+                )
 
-                # 同じポイントで何度も publish しないように index を進める
+                self.get_logger().info(
+                    f"Switch point {self.current_switch_point_index + 1} reached: "
+                    "start publishing gnss_emcl_* for 1.0s.\r"
+                )
+
+                # 同じポイントで何度も判定しないように index を進める
                 self.current_switch_point_index += 1
                 if self.current_switch_point_index < len(self.switch_points):
                     self.current_switch_point = \
                         self.switch_points[self.current_switch_point_index]
-                        
-                        
-
-    def gnss_callback(self, msg: PoseStamped):
+               
+    def switch_publish_timer_cb(self):
         """
-        GNSS座標系での位置を監視し、switch_points への接近を判定するコールバック。
-        座標系は switch_points と同じ前提（GNSS 座標系）。
+        スイッチポイント到達時に、一定時間 True を連続 publish するための Timer。
 
-        - switch_points[0] に到達したら gnss_emcl_1 に True を一度だけ publish
-        - switch_points[1] に到達したら gnss_emcl_2 に True を一度だけ publish
+        - self.switch_publish_until が None のとき: 何もしない
+        - 現在時刻が switch_publish_until を過ぎたら: フラグをクリア
+        - それまでは switch_reached_id に応じて gnss_emcl_1 / gnss_emcl_2 に True を publish
         """
-        # GNSS での現在位置
-        current_x = msg.pose.position.x
-        current_y = msg.pose.position.y
-
-        # もうすべてのスイッチポイントを処理し終わっていたら何もしない
-        if self.current_switch_point_index >= len(self.switch_points):
+        if self.switch_publish_until is None:
             return
 
-        sx, sy = self.current_switch_point
-        distance_to_switch = math.hypot(sx - current_x, sy - current_y)
+        now = self.get_clock().now()
+        if now > self.switch_publish_until:
+            # publish 期間終了
+            self.get_logger().info("Switch publish window finished.\r")
+            self.switch_publish_until = None
+            self.switch_reached_id = None
+            return
+
+        msg_bool = Bool()
+        msg_bool.data = True
+        
 
 
-        self.get_logger().info(
-            f"[GNSS] Distance to Switch Point {self.current_switch_point_index + 1}: "
-            f"{distance_to_switch:.2f}\r"
-        )
+        if self.switch_reached_id == 0:
+            self.goal_pub_1.publish(msg_bool)
+            # ログ出しすぎるとスパムなので必要ならコメントアウト
+            self.get_logger().info("Publishing gnss_emcl_1 = True\r")
+        elif self.switch_reached_id == 1:
+            self.goal_pub_2.publish(msg_bool)
+            self.get_logger().info("Publishing gnss_dwa_on = True\r")
 
-        if distance_to_switch < self.distance_threshold:
-            # 一度だけ True を publish
-            msg_bool = Bool()
-            msg_bool.data = True
-
-            if self.current_switch_point_index == 0:
-                #self.goal_pub_1.publish(msg_bool)
-                self.get_logger().info(
-                    "Switch point 1 reached (GNSS): published gnss_emcl_1 = True\r"
-                )
-            elif self.current_switch_point_index == 1:
-                #self.goal_pub_2.publish(msg_bool)
-                self.get_logger().info(
-                    "Switch point 2 reached (GNSS): published gnss_emcl_2 = True\r"
-                )
-
-            # 同じポイントで何度も publish しないように index を進める
-            self.current_switch_point_index += 1
-            if self.current_switch_point_index < len(self.switch_points):
-                self.current_switch_point = \
-                    self.switch_points[self.current_switch_point_index]
-    
-    
-    
+         
     def obstacle_callback(self, msg: Bool):
         """
         センサ値を内部変数に書き込むだけ。
@@ -424,6 +404,7 @@ class CmdVelControlNode(Node):
                 obstacle_detected = False にして進ませる
                 （同じ連続 True に対して再度 True にはしない）
         """
+        
         now = self.get_clock().now()
 
         if not self.obstacle_raw:
@@ -490,7 +471,7 @@ class CmdVelControlNode(Node):
             if self.dwa_active:
                 self.get_logger().info(
                     f"DWA timeout ({dt:.2f}s). Setting DWA OFF.\r"
-                )
+                    )
             self.dwa_active = False
 
     # ============================================================
