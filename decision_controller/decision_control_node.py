@@ -57,13 +57,15 @@ class CmdVelControlNode(Node):
         # =========================
         # Odom 座標系での停止ポイントリストを格納すること！
         self.stop_points = [
-            (26.45352,  30.05956),  # 横断歩道1 # TODO 更新
-            (63.6472,  35.7471),  # 横断歩道2
-            (140.067,  29.0186),  # 横断歩道3
-            (223.646, -68.5382),  # 白線1
-            (222.879, -75.2085),  # 点字1
-            (221.272, -95.0025),  # 白線2
-            (224.8,   -97.1773),  # 点字2
+            #`emcl no point wo insert suru.`
+            (104.68077,-21.02436), # 横断歩道１（emclのodom座標系での位置）
+            (33.253646,  72.491326),  # 横断歩道2 # TODO 更新
+            #(63.6472,  35.7471),  # 横断歩道2
+            #(140.067,  29.0186),  # 横断歩道3
+            #(223.646, -68.5382),  # 白線1
+            #(222.879, -75.2085),  # 点字1
+            #(221.272, -95.0025),  # 白線2
+            #(224.8,   -97.1773),  # 点字2
             ]   
         
         self.distance_threshold = 2.0 #[m]
@@ -77,8 +79,9 @@ class CmdVelControlNode(Node):
         
         
         self.switch_points = [
-            (-2.170683,36.495309),# GNSS→EMCL ①
-            (2.0831845,33.10387), # GNSS with DWA
+            (-96.202789,110.374151),# GNSS→EMCL ① /gnss_emcl_1 に対応
+            (117.7096,-17.4984),  # EMCL→GNSS   /emcl_gnss_1 に対応  (EMCL のodom座標系での位置) 
+            # 
             ]
         
         self.switch_publish_until = None
@@ -91,7 +94,7 @@ class CmdVelControlNode(Node):
         # リスト，Switch Pointの一つ目に到達したらTrueをpublishする
         self.goal_pub_1 = self.create_publisher(Bool, 'gnss_emcl_1', 10)
         # 二つ目に到達したらTrueをpublishする
-        self.goal_pub_2 = self.create_publisher(Bool, 'gnss_dwa_on', 10)
+        self.goal_pub_2 = self.create_publisher(Bool, 'emcl_gnss_1', 10)
         
         # =========================
         # 障害物処理
